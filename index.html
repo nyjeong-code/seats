@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>도서관 좌석 관리</title>
+<style>
+  body { font-family: "Malgun Gothic", sans-serif; background:#f4f6f8; margin:0; padding:24px; }
+  h1 { text-align:center; margin:0 0 6px; }
+  .info { text-align:center; color:#555; margin-bottom:16px; }
+  .legend { display:flex; justify-content:center; gap:20px; margin-bottom:20px; }
+  .legend span { display:inline-flex; align-items:center; gap:6px; }
+  .dot { width:14px; height:14px; border-radius:3px; display:inline-block; }
+  .status { text-align:center; margin-bottom:16px; font-weight:bold; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(110px, 1fr));
+          gap:12px; max-width:900px; margin:0 auto; }
+  .seat { padding:16px 8px; border:none; border-radius:10px; cursor:pointer;
+          color:#fff; font-size:16px; font-weight:bold; transition:transform .1s; }
+  .seat:hover { transform:scale(1.04); }
+  .seat.empty { background:#43a047; }
+  .seat.used  { background:#e53935; }
+  .seat small { display:block; margin-top:6px; font-size:12px; font-weight:normal; }
+
+  /* 이용 시간 선택 창 */
+  .overlay { position:fixed; inset:0; background:rgba(0,0,0,.45);
+             display:none; align-items:center; justify-content:center; }
+  .overlay.show { display:flex; }
+  .modal { background:#fff; border-radius:12px; padding:24px; width:300px; text-align:center; }
+  .modal h2 { margin:0 0 6px; font-size:20px; }
+  .modal p { margin:0 0 18px; color:#555; }
+  .hours { display:flex; gap:8px; margin-bottom:12px; }
+  .hours button { flex:1; padding:14px 0; border:none; border-radius:8px;
+                  background:#1e88e5; color:#fff; font-size:16px; font-weight:bold; cursor:pointer; }
+  .hours button:hover { background:#1565c0; }
+  .cancel { width:100%; padding:10px; border:1px solid #ccc; border-radius:8px;
+            background:#fff; cursor:pointer; font-size:14px; }
+</style>
+</head>
+<body>
+  <h1>📚 도서관 좌석 현황</h1>
+  <p class="info">빈 좌석을 누르고 이용 시간을 선택하세요. 이용 중인 좌석을 누르면 이용이 완료됩니다.<br>
+     선택한 이용 시간이 지나면 자동으로 빈 좌석이 됩니다.</p>
+  <div class="legend">
+    <span><i class="dot" style="background:#43a047"></i>빈 좌석</span>
+    <span><i class="dot" style="background:#e53935"></i>이용 중</span>
+  </div>
+  <div class="status" id="status"></div>
+  <div class="grid" id="grid"></div>
+
+  <!-- 이용 시간 선택 창 -->
+  <div class="overlay" id="overlay">
+    <div class="modal">
+      <h2 id="modalTitle"></h2>
+      <p>이용 시간을 선택하세요</p>
+      <div class="hours" id="hourButtons"></div>
+      <button class="cancel" onclick="closeModal()">취소</button>
+    </div>
+  </div>
+
+<script>
+  // ===== 설정 =====
+  const SEAT_COUNT = 30;            // 좌석 수
+  const HOUR_OPTIONS = [2, 3, 4];   // 선택 가능한 이용 시간(시간)
+  const STORAGE_KEY = 'librarySeats';
+
+  // seats = { 좌석번호: { start: 시작시각(ms), end: 종료시각(ms), hours: 이용시간 } }
+  let seats = load();
+  let selectedSeat = null;
+
+  function load() {
+    try {
+      const data = JSON.parse(localStorage.getItem(STORAGE_KEY)) || {};
+      // 예전 형식(시작 시각 숫자만 저장)은 3시간 이용으로 변환
+      for (const id in data) {
+        if (typeof data[id] === 'number') {
+          data[id] = { start: data[id], end: data[id] + 3 * 3600000, hours: 3 };
+        }
+      }
+      return data;
+    } catch (e) { return {}; }
+  }
+  function save() {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(seats)); } catch (e) {}
+  }
+
+  // 종료 시각이 지난 좌석 자동 반납
+  function releaseExpired() {
+    const now = Date.now();
+    let changed = false;
+    for (const id in seats) {
+      if (now >= seats[id].end) { delete seats[id]; changed = true; }
+    }
+    if (changed) save();
+  }
+
+  function formatTime(ms) {
+    return new Date(ms).toTimeString().slice(0, 5);
+  }
+  function formatRemain(ms) {
+    const totalMin = Math.max(0, Math.ceil(ms / 60000));
+    const h = Math.floor(totalMin / 60), m = totalMin % 60;
+    return h > 0 ? `${h}시간 ${m}분 남음` : `${m}분 남음`;
+  }
+
+  function render() {
+    const grid = document.getElementById('grid');
+    grid.innerHTML = '';
+    const now = Date.now();
+    let usedCount = 0;
+
+    for (let i = 1; i <= SEAT_COUNT; i++) {
+      const btn = document.createElement('button');
+      const seat = seats[i];
+      btn.className = 'seat ' + (seat ? 'used' : 'empty');
+      if (seat) {
+        usedCount++;
+        btn.innerHTML = `${i}번<small>${formatTime(seat.end)}까지 (${seat.hours}시간)<br>`
+                      + `${formatRemain(seat.end - now)}</small>`;
+      } else {
+        btn.innerHTML = `${i}번<small>빈 좌석</small>`;
+      }
+      btn.onclick = () => onSeatClick(i);
+      grid.appendChild(btn);
+    }
+    document.getElementById('status').textContent =
+      `이용 중 ${usedCount}석 / 빈 좌석 ${SEAT_COUNT - usedCount}석`;
+  }
+
+  function onSeatClick(id) {
+    releaseExpired();
+    if (seats[id]) {
+      if (confirm(`${id}번 좌석 이용을 완료하시겠습니까?`)) {
+        delete seats[id];
+        save();
+      }
+      render();
+    } else {
+      openModal(id);
+    }
+  }
+
+  // ===== 이용 시간 선택 창 =====
+  function openModal(id) {
+    selectedSeat = id;
+    document.getElementById('modalTitle').textContent = `${id}번 좌석`;
+    const box = document.getElementById('hourButtons');
+    box.innerHTML = '';
+    HOUR_OPTIONS.forEach(h => {
+      const b = document.createElement('button');
+      b.textContent = `${h}시간`;
+      b.onclick = () => startSeat(h);
+      box.appendChild(b);
+    });
+    document.getElementById('overlay').classList.add('show');
+  }
+  function closeModal() {
+    selectedSeat = null;
+    document.getElementById('overlay').classList.remove('show');
+  }
+  function startSeat(hours) {
+    // 창이 열려 있는 사이 다른 탭에서 선택됐을 경우 대비
+    seats = load();
+    releaseExpired();
+    if (seats[selectedSeat]) {
+      alert('이미 다른 사람이 선택한 좌석입니다.');
+    } else {
+      const now = Date.now();
+      seats[selectedSeat] = { start: now, end: now + hours * 3600000, hours };
+      save();
+      alert(`${selectedSeat}번 좌석 이용이 시작되었습니다.\n종료 예정: ${formatTime(now + hours * 3600000)}`);
+    }
+    closeModal();
+    render();
+  }
+  // 바깥 영역 클릭 시 창 닫기
+  document.getElementById('overlay').addEventListener('click', e => {
+    if (e.target.id === 'overlay') closeModal();
+  });
+
+  // 30초마다 자동 반납 확인 및 남은 시간 갱신
+  setInterval(() => { releaseExpired(); render(); }, 30000);
+
+  // 같은 브라우저의 다른 탭과 상태 동기화
+  window.addEventListener('storage', e => {
+    if (e.key === STORAGE_KEY) { seats = load(); render(); }
+  });
+
+  releaseExpired();
+  render();
+</script>
+</body>
+</html>
